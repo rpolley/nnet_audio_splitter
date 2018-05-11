@@ -1,0 +1,96 @@
+import numpy as np
+import wave
+import tarfile
+import os
+from random import randint
+
+
+def set_dataset_shape():
+    global DATASET_SHAPE
+    DATASET_SHAPE = (len(os.listdir(os.path.join("Audio", "Main", "16kHz_16bit"))),10)
+
+set_dataset_shape()
+
+def load_random_batch(batchsize,windowsize,binsize):
+    scnorms = [(load_random_scnorm(windowsize,binsize),
+                load_random_scnorm(windowsize,binsize)) for i in range(0,batchsize)]
+    X = np.array(list(map(scnorm2spec, map(sum_scnorms,scnorms))))
+    Y = np.array(list(map(list,map(lambda s: map(scnorm2spec, s), scnorms))))
+    return X,Y
+    
+def load_random_scnorm(windowsize,binsize):
+    archindex = randint(0,DATASET_SHAPE[0]-1)
+    scnorm = scnorm_from_index(archindex,binsize)
+    wstart = randint(0,scnorm.shape[0]-windowsize)
+    wend = wstart + windowsize
+    return scnorm[wstart:wend]
+
+def scnorm_from_index(index, binsize):
+    p = os.path.join("Audio", "Main", "16kHz_16bit")
+    archlist = os.listdir(p)
+    arch = archlist[index]
+    p = os.path.join(p, arch)
+    scnorm = tgz2scnorm(p, binsize)
+    return scnorm
+        
+
+def tgz2scnorm(tarfilename, binsize):
+    segments = []
+    with tarfile.open(tarfilename, mode="r") as tf:
+        audio_names = [n for n in tf.getnames() if n.find(".wav")!=-1]
+        audio_names.sort()
+        for name in audio_names:
+            with tf.extractfile(name) as wf:
+                segments.append(wav2scnorm(wf, binsize))
+    return np.concatenate(segments)
+
+def trim_short_files(threshold, binsize):
+    i = 0
+    while i < DATASET_SHAPE[0]:
+        p = os.path.join("Audio", "Main", "16kHz_16bit")
+        archlist = os.listdir(p)
+        arch = archlist[i]
+        p = os.path.join(p, arch)
+        scnorm = tgz2scnorm(p, binsize)
+        if(scnorm.shape[0]<threshold):
+            os.remove(p)
+            set_dataset_shape()
+        
+
+def scnorm2spec(scnorm):
+    np_spec = np.fft.fft(scnorm)
+    np_spec_amplitude = np.abs(np_spec)
+    np_spec_phase = np.angle(np_spec)
+    np_spec_fl = np.stack((np_spec_amplitude,np_spec_phase), axis=2)
+    return np_spec_fl
+
+def wav2scnorm(fp, bin_size):
+    np_raw_audio = None
+    f = wave.open(fp)
+    sample_width = f.getsampwidth()
+    num_frames = int(f.getnframes())
+    num_bins = int(num_frames/bin_size)
+    np_raw_audio = np.empty((num_bins, bin_size))
+    for i in range(num_bins):
+        raw_audio = f.readframes(bin_size)
+        for j in range(bin_size):
+            fl_sample = bytes2scnorm(raw_audio[j*sample_width:(j+1)*sample_width],sample_width)
+            np_raw_audio[i,j] = fl_sample
+    return np_raw_audio  
+        
+def bytes2scnorm(bytes, l):
+    accum = 0
+    exponent = 0
+    for b in bytes:
+        accum += int(b) << exponent
+    return float(accum)/(2<<exponent)
+    
+def downsample(scnorm):
+    return np.delete(scnorm, list(range(0,scnorm.shape[1], axis=1)))
+    
+def sum_scnorms(scnorms):
+    return sum(map(lambda x: x/len(scnorms), scnorms))
+
+
+if (__name__=='__main__'):
+    trim_short_files(1500,256)

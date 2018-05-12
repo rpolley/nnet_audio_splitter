@@ -3,6 +3,7 @@ import wave
 import tarfile
 import os
 from random import randint
+import struct
 
 
 def set_dataset_shape():
@@ -42,6 +43,8 @@ def tgz2scnorm(tarfilename, binsize):
         for name in audio_names:
             with tf.extractfile(name) as wf:
                 segments.append(wav2scnorm(wf, binsize))
+    if(len(segments)==0):
+        return np.zeros((1,1))
     return np.concatenate(segments)
 
 def trim_short_files(threshold, binsize):
@@ -70,21 +73,15 @@ def wav2scnorm(fp, bin_size):
     sample_width = f.getsampwidth()
     num_frames = int(f.getnframes())
     num_bins = int(num_frames/bin_size)
-    np_raw_audio = np.empty((num_bins, bin_size))
+    short_slices = []
     for i in range(num_bins):
         raw_audio = f.readframes(bin_size)
-        for j in range(bin_size):
-            fl_sample = bytes2scnorm(raw_audio[j*sample_width:(j+1)*sample_width],sample_width)
-            np_raw_audio[i,j] = fl_sample
+        raw_audio_shorts = struct.iter_unpack("h",raw_audio)
+        short_slices.append(raw_audio_shorts)
+    np_shorts = np.stack(raw_audio_shorts, axis=1)
+    np_raw_audio = np_shorts/32768.0
     return np_raw_audio  
         
-def bytes2scnorm(bytes, l):
-    accum = 0
-    exponent = 0
-    for b in bytes:
-        accum += int(b) << exponent
-    return float(accum)/(2<<exponent)
-    
 def downsample(scnorm):
     return np.delete(scnorm, list(range(0,scnorm.shape[1], axis=1)))
     

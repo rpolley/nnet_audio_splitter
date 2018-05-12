@@ -1,32 +1,24 @@
 from keras.models import Sequential, load_model
 from keras.layers.core import Activation, Dense, Flatten
 from keras.layers.convolutional import Conv2D
+from keras.layers.convolutional_recurrent import ConvLSTM2D
 from keras.optimizers import Adam
 import collections
 import numpy as np
 import os
 import random
 
-def get_next_batch(num_frequencies, gamma, batch_size):
-    batch_indices = np.random.randint(low=0, high=len(experience),
-                                      size=batch_size)
-    batch = [experience[i] for i in batch_indices]
-    #batch = experience[batch_indices]
-    # batch is a list of experiences: (prev_state, action, score, state, continue_round)
-    X = np.zeros((batch_size, 4, 4, 1)) 
-    # X is a batch_size of frames.
-    Y = np.zeros((batch_size, num_actions)) 
-    # Y is a batch size of rewards (for each action).
-    for i in range(len(batch)):
-        #s_t, a_t, r_t, s_tp1, game_over = batch[i]
-        prev_state, action, score, state, continue_round = batch[i]
-        X[i] = prev_state
-        Y[i] = model.predict(prev_state)[0]
-        Q_sa = np.max(model.predict(state)[0])
-        if continue_round == False:
-            Y[i, action] = score
-        else:
-            Y[i, action] = score + gamma * Q_sa
+
+signal1 = [1.0 for i in range(100)]
+signal2 = [1.0 for i in range(100)]
+source = [[(i+j)] for i,j in zip(signal1, signal2)]
+target = [[i,j] for i,j in zip(signal1, signal2)]
+
+
+
+def get_next_batch(num_frequencies, batch_size):
+    X = None
+    Y = None
     return X, Y
 
 if __name__ == "__main__":   
@@ -34,11 +26,16 @@ if __name__ == "__main__":
 
     # initialize parameters
     DATA_DIR = ""
-    NUM_FREQUENCY_BINS = 100 # number of frequencies
-    NUM_EPOCHS_TRAIN = 1000
-
     BATCH_SIZE = 32
-
+    WINDOW_LENGTH = 10
+    FREQUENCY_BINS = 100 # number of frequencies
+    KERNEL = (3,2)
+    FILTERS = 128
+    KERNEL_OUTPUT = (3,1)
+    OUTPUT_CHANNELS = 2
+    
+    EPOCHS_TRAIN = 1000
+    
     modelFile = "signal-seperation-network.h6"
 
     if os.path.exists(modelFile):
@@ -46,91 +43,53 @@ if __name__ == "__main__":
     else:
         # build the model
         model = Sequential()
-        model.add(Conv2D(16, kernel_size=2, strides=1,
-                 kernel_initializer="normal", 
-                 padding="same",
-                 input_shape=(4, 4, 1)))
-        model.add(Activation("relu"))
-        model.add(Conv2D(32, kernel_size=2, strides=1, 
-                 kernel_initializer="normal", 
-                 padding="same"))
-        model.add(Activation("relu"))
-        model.add(Conv2D(32, kernel_size=2, strides=1,
-                 kernel_initializer="normal",
-                 padding="same"))
-        model.add(Activation("relu"))
-        model.add(Flatten())
-        model.add(Dense(128, kernel_initializer="normal"))
-        model.add(Activation("relu"))
-        model.add(Dense(3, kernel_initializer="normal"))
+        # read the phase and frequency and also read the neighbors values
+        # 128 different evaluations of neighboring filters
+        # padding='valid' and return_sequences=False
+        # input is (Batch, Time, 100, 2, 1) the output will be (Batch, 98, 1, 128)
+        model.add(
+            ConvLSTM2D(
+                filters=FILTERS,
+                kernel_size=KERNEL,
+                strides=(1,1),
+                padding='valid',
+                data_format='channels_last',
+                activation='relu',
+                batch_input_shape=(BATCH_SIZE,WINDOW_LENGTH,FREQUENCY_BINS,2,1),
+                return_sequences=True))
+        model.add(
+            ConvLSTM2D(
+                filters=OUTPUT_CHANNELS,
+                kernel_size=KERNEL_OUTPUT,
+                strides=(1,1),
+                padding='valid',
+                data_format='channels_last',
+                activation='relu',
+                batch_input_shape=(BATCH_SIZE,WINDOW_LENGTH,FREQUENCY_BINS-4,1,FILTERS),
+                return_sequences=False))
+    model.summary()
 
     model.compile(optimizer=Adam(lr=1e-6), loss="mse")
 
     # train network
-    game = blackjack.Blackjack()
-    game.should_print = False
-    experience = collections.deque(maxlen=MEMORY_SIZE)
-
     fout = open(os.path.join(DATA_DIR, "blackjack-simple-results.tsv"), "w")
-    num_games, num_wins = 0, 0
-    epsilon = INITIAL_EPSILON
-    for e in range(NUM_EPOCHS):
+    
+    for e in range(EPOCHS_TRAIN):
         loss = 0.0
-        game.reset()
-        # get first state
-        continue_game = game.start_round()
-        while (continue_game):
-            prev_state = preprocess_rounds(np.array(list(game.rounds)))
-            if e <= NUM_EPOCHS_OBSERVE or np.random.rand() <= epsilon:
-                action = random.randint(0, 2)
-            else:
-                q = model.predict(prev_state)[0]
-                action = np.argmax(q)
-                
-            continue_game, continue_round, score, state = game.computer_turn(action)
-            state = preprocess_rounds(state)
-            if(score > 0):
-                num_wins += 1
 
-            experience.append((prev_state, action, score, state, continue_round))
-            while(continue_round):
-                prev_state = state
-                if e <= NUM_EPOCHS_OBSERVE or np.random.rand() <= epsilon:
-                    action = random.randint(0, 2)
-                else:
-                    q = model.predict(prev_state)[0]
-                    action = np.argmax(q)
-
-                continue_game, continue_round, score, state = game.computer_turn(action)
-                state = preprocess_rounds(state)
-                if(score > 0):
-                    num_wins += 1
-
-                experience.append((prev_state, action, score, state, continue_round))
-
-            #train after every round
-            if (e > NUM_EPOCHS_OBSERVE):
-                X, Y = get_next_batch(experience, model, NUM_ACTIONS, 
-                                  GAMMA, BATCH_SIZE)
-                loss += model.train_on_batch(X, Y)
-                
-            if(continue_game):
-                continue_game = game.start_round()
-
-        # reduce epsilon gradually ever epoc
-        if epsilon > FINAL_EPSILON:
-            epsilon -= (INITIAL_EPSILON - FINAL_EPSILON) / NUM_EPOCHS
+        X, Y = get_next_batch(FREQUENCY_BINS, BATCH_SIZE)
+        loss += model.train_on_batch(X, Y)
 
         if e % 20 == 0:
-            print("\nEpoch {:04d}/{:d} | Loss {:.5f} | Win Count: {:d}" 
-                  .format(e+1, NUM_EPOCHS, loss, num_wins), end="\n")
+            print("\nEpoch {:04d}/{:d} | Loss {:.5f}\n" 
+                  .format(e+1, EPOCHS_TRAIN, loss), end="\n")
 
-        fout.write("{:04d}\t{:.5f}\t{:d}\n" 
-                   .format(e+1, loss, num_wins))
+        fout.write("{:04d}\t{:.5f}\n" 
+                   .format(e+1, loss))
 
         if e % 100 == 0:
             model.save(os.path.join(DATA_DIR, modelFile), overwrite=True)
                 
-    print("")
+    print("Done")
     fout.close()
     model.save(os.path.join(DATA_DIR, modelFile), overwrite=True)
